@@ -1,3 +1,6 @@
+@assert = (expr) ->
+  throw 'Assert failed' unless expr
+
 @EventMixin =
   _eventHandlers: ->
     @_eventHandlers ||= {}
@@ -45,6 +48,16 @@ class @Module
     obj.included?.apply(@)
     this
 
+Number::add = (v) -> @ + v
+Number::sub = (v) -> @ - v
+Number::mul = (v) -> @ * v
+Number::div = (v) -> @ / v
+Number::pow = (v) -> Math.pow(@, v)
+Number::sqr = -> Math.pow(@, 2)
+Number::sqrt = -> Math.sqrt(@)
+Number::ceil = -> Math.ceil(@)
+Number::round = -> Math.round(@)
+
 class @Canvas extends Module
   @include EventMixin
 
@@ -52,7 +65,6 @@ class @Canvas extends Module
     @id = id
     @canvas = document.getElementById(id)
     @context = @canvas.getContext('2d')
-    @clear()
     return
 
   # canvas
@@ -67,6 +79,7 @@ class @Canvas extends Module
 
   clear: ->
     @context.clearRect(0, 0, @width, @height)
+    @imageData = @context.getImageData(0, 0, @width, @height)
     return
 
   draw: ->
@@ -75,7 +88,7 @@ class @Canvas extends Module
 
   # helpers
   _position: (x = 0, y = 0) ->
-    (y * @width + x) * 4
+    ((@height - y) * @width + x) * 4
 
   _numberToRGBA: (c = 0, alpha = false) ->
     {
@@ -90,6 +103,8 @@ class @Canvas extends Module
     @putRGBAPixel x, y, @_numberToRGBA(c, alpha)
 
   putRGBAPixel: (x = 0, y = 0, rgba = {}) ->
+    return if x > @width or y > @height
+
     bytes = [
       if rgba.r? then rgba.r else 0xFF
       if rgba.g? then rgba.g else 0xFF
@@ -113,22 +128,135 @@ class @Canvas extends Module
   getRGBAPixel: (x = 0, y = 0) ->
     return @_numberToRGBA @getPixel(x, y), true
 
+class @FileInput extends Module
+  @include EventMixin
+
+  types:
+    'text' : 'readAsText'
+    'bytes': 'readAsArrayBuffer'
+
+  constructor: (@id, @type = 'text') ->
+    @input = document.getElementById(@id)
+    @input.onchange = @onChange.bind(@)
+
+    @reader = new FileReader()
+    @reader.onload = @onLoad.bind(@)
+
+  onChange: (event) ->
+    @file = event.target.files[0]
+    @reader[@types[@type]](@file)
+
+  onLoad: (event) ->
+    @data = event.target.result
+    @trigger 'load', @data
+
+class @Vec2 extends Module
+
+  constructor: (@x = 0, @y = 0) ->
+
+  add: (v) -> new Vec2 @x.add v.x, @y.add v.y
+  sub: (v) -> new Vec2 @x.sub v.x, @y.sub v.y
+  mul: (f) -> new Vec2 @x.mul f  , @y.mul f
+
+  print: -> console.log "(#{@x}, #{@y})"
+
+class @Vec3 extends Module
+
+  constructor: (@x = 0, @y = 0, @z = 0) ->
+
+  prod: (v) -> new Vec3 @y.mul(v.z).sub @z.mul(v.y), @z.mul(v.x).sub @x.mul(v.z), @x.mul(v.y).sub @y.mul(v.x)
+  add: (v) -> new Vec3 @x.add v.x, @y.add v.y, @z.add v.z
+  sub: (v) -> new Vec3 @x.sub v.x, @y.sub v.y, @z.sub v.z
+  mul: (v) ->
+    if v instanceof Vec3
+      @x.mul(v.x).add(@y.mul(v.y)).add(@z.mul(v.z))
+    else
+      new Vec3 @x.mul(v), @y.mul(v), @z.mul(v)
+
+  norm: -> @x.mul(@x).add(@y.mul(@y)).add(@z.mul(@z)).sqrt()
+  normalize: (l = 1) -> @mul(l / @norm())
+
+  print: -> console.log "(#{@x}, #{@y}, #{@z})"
+
+@line = (x0, y0, x1, y1, color, canvas) ->
+  steep = false
+  if Math.abs(x0 - x1) < Math.abs(y0 - y1)
+    [x0, y0] = [y0, x0]
+    [x1, y1] = [y1, x1]
+    steep = true
+
+  if x0 > x1
+    [x0, x1] = [x1, x0]
+    [y0, y1] = [y1, y0]
+
+  dx = x1 - x0
+  dy = y1 - y0
+
+  derror2 = Math.abs(dy) * 2
+  error2  = 0
+
+  ystep = if y1 > y0 then 1 else -1
+  y = y0
+
+  for x in [x0..x1]
+    if steep
+      canvas.putPixel y, x, color
+    else
+      canvas.putPixel x, y, color
+
+    error2 += derror2
+
+    if error2 > dx
+      y += ystep
+      error2 -= dx * 2
+
+class @Model extends Module
+
+  regexs:
+    v: /^v +([-+\.\de]+) +([-+\.\de]+) +([-+\.\de]+)$/
+    f: /^f +(\d+)\/(\d+)\/(\d+) +(\d+)\/(\d+)\/(\d+) +(\d+)\/(\d+)\/(\d+)$/
+
+  constructor: (data) ->
+    @verts = [null]
+    @faces = []
+
+    for line in data.split('\n')
+      if v = line.match(@regexs.v)
+        v = v.slice(1).map Number
+        @verts.push new Vec3(v[0], v[1], v[2])
+      else if f = line.match(@regexs.f)
+        f = f.slice(1).map Number
+        @faces.push [f[0], f[3], f[6]]
+
 canvas = null
+model = null
+
+width  = 800
+height = 800
 
 window.onload = ->
+  fileinput = new FileInput('file')
   canvas = new Canvas('canvas')
-  window.onresize()
+  canvas.setSize(width, height)
 
-window.onresize = ->
-  w = window.innerWidth  * 0.9
-  h = window.innerHeight * 0.9
-  canvas.setSize(w, h)
-  canvas.putPixel(10, 10, 0xff0000)
-  canvas.putPixel(11, 11, 0xff0000)
-  canvas.putPixel(12, 12, 0xff0000)
-  canvas.putPixel(13, 13, 0xff0000)
-  canvas.putPixel(10, 11, 0xff0000)
-  canvas.putPixel(11, 12, 0xff0000)
-  canvas.putPixel(12, 13, 0xff0000)
-  canvas.putPixel(13, 14, 0xff0000)
-  canvas.draw()
+  fileinput.on 'load', (data) ->
+    canvas.clear()
+
+    model = new Model(data)
+
+    wHalf = width / 2
+    hHalf = height / 2
+
+    for face in model.faces
+      for i in [0..2]
+        v0 = model.verts[face[i]]
+        v1 = model.verts[face[(i + 1) % 3]]
+
+        x0 = ((v0.x.add(1)).mul(wHalf)).ceil()
+        y0 = ((v0.y.add(1)).mul(hHalf)).ceil()
+        x1 = ((v1.x.add(1)).mul(wHalf)).ceil()
+        y1 = ((v1.y.add(1)).mul(hHalf)).ceil()
+
+        line(x0, y0, x1, y1, 0xFFFFFF, canvas)
+
+    canvas.draw()

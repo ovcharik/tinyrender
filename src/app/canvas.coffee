@@ -5,7 +5,6 @@ class @Canvas extends Module
     @id = id
     @canvas = document.getElementById(id)
     @context = @canvas.getContext('2d')
-    @clear()
     return
 
   # canvas
@@ -20,6 +19,7 @@ class @Canvas extends Module
 
   clear: ->
     @context.clearRect(0, 0, @width, @height)
+    @imageData = @context.getImageData(0, 0, @width, @height)
     return
 
   draw: ->
@@ -28,7 +28,7 @@ class @Canvas extends Module
 
   # helpers
   _position: (x = 0, y = 0) ->
-    (y * @width + x) * 4
+    ((@height - y) * @width + x) * 4
 
   _numberToRGBA: (c = 0, alpha = false) ->
     {
@@ -43,6 +43,8 @@ class @Canvas extends Module
     @putRGBAPixel x, y, @_numberToRGBA(c, alpha)
 
   putRGBAPixel: (x = 0, y = 0, rgba = {}) ->
+    return if x > @width or y > @height
+
     bytes = [
       if rgba.r? then rgba.r else 0xFF
       if rgba.g? then rgba.g else 0xFF

@@ -1,0 +1,9 @@
+Number::add = (v) -> @ + v
+Number::sub = (v) -> @ - v
+Number::mul = (v) -> @ * v
+Number::div = (v) -> @ / v
+Number::pow = (v) -> Math.pow(@, v)
+Number::sqr = -> Math.pow(@, 2)
+Number::sqrt = -> Math.sqrt(@)
+Number::ceil = -> Math.ceil(@)
+Number::round = -> Math.round(@)
