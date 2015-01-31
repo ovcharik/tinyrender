@@ -31,6 +31,7 @@ class @Canvas extends Module
     ((@height - y) * @width + x) * 4
 
   _numberToRGBA: (c = 0, alpha = false) ->
+    return c if typeof c == 'object'
     {
       r: (c >> 16) & 0xFF
       g: (c >>  8) & 0xFF

@@ -125,6 +125,10 @@
     return Math.round(this);
   };
 
+  Number.prototype.abs = function() {
+    return Math.abs(this);
+  };
+
   this.Canvas = (function(_super) {
     __extends(Canvas, _super);
 
@@ -170,6 +174,9 @@
       }
       if (alpha == null) {
         alpha = false;
+      }
+      if (typeof c === 'object') {
+        return c;
       }
       return {
         r: (c >> 16) & 0xFF,
@@ -292,15 +299,19 @@
     }
 
     Vec2.prototype.add = function(v) {
-      return new Vec2(this.x.add(v.x, this.y.add(v.y)));
+      return new Vec2(this.x.add(v.x), this.y.add(v.y));
     };
 
     Vec2.prototype.sub = function(v) {
-      return new Vec2(this.x.sub(v.x, this.y.sub(v.y)));
+      return new Vec2(this.x.sub(v.x), this.y.sub(v.y));
     };
 
-    Vec2.prototype.mul = function(f) {
-      return new Vec2(this.x.mul(f, this.y.mul(f)));
+    Vec2.prototype.mul = function(v) {
+      if (v instanceof Vec2) {
+        return this.x.mul(v.x).add(this.y.mul(v.y));
+      } else {
+        return new Vec2(this.x.mul(v), this.y.mul(v));
+      }
     };
 
     Vec2.prototype.print = function() {
@@ -321,15 +332,15 @@
     }
 
     Vec3.prototype.prod = function(v) {
-      return new Vec3(this.y.mul(v.z).sub(this.z.mul(v.y), this.z.mul(v.x).sub(this.x.mul(v.z), this.x.mul(v.y).sub(this.y.mul(v.x)))));
+      return new Vec3(this.y.mul(v.z).sub(this.z.mul(v.y)), this.z.mul(v.x).sub(this.x.mul(v.z)), this.x.mul(v.y).sub(this.y.mul(v.x)));
     };
 
     Vec3.prototype.add = function(v) {
-      return new Vec3(this.x.add(v.x, this.y.add(v.y, this.z.add(v.z))));
+      return new Vec3(this.x.add(v.x), this.y.add(v.y), this.z.add(v.z));
     };
 
     Vec3.prototype.sub = function(v) {
-      return new Vec3(this.x.sub(v.x, this.y.sub(v.y, this.z.sub(v.z))));
+      return new Vec3(this.x.sub(v.x), this.y.sub(v.y), this.z.sub(v.z));
     };
 
     Vec3.prototype.mul = function(v) {
@@ -424,6 +435,36 @@
 
   })(Module);
 
+  this.triangle = function(t0, t1, t2, color, canvas) {
+    var a, alpha, b, beta, i, secondHalf, segHeight, t10, t20, t21, totalHight, x, y, _i, _ref, _results;
+    _ref = [t0, t1, t2].sort(function(a, b) {
+      return a.y - b.y;
+    }), t0 = _ref[0], t1 = _ref[1], t2 = _ref[2];
+    t10 = t1.sub(t0);
+    t20 = t2.sub(t0);
+    t21 = t2.sub(t1);
+    totalHight = t2.y - t0.y;
+    _results = [];
+    for (i = _i = 0; 0 <= totalHight ? _i <= totalHight : _i >= totalHight; i = 0 <= totalHight ? ++_i : --_i) {
+      secondHalf = i > t1.y - t0.y || t1.y === t0.y;
+      segHeight = secondHalf && t2.y - t1.y || t1.y - t0.y;
+      y = t0.y + i;
+      alpha = i / totalHight;
+      beta = (i - (secondHalf && t1.y - t0.y || 0)) / segHeight;
+      Vec2(a = t0.add(t20.mul(alpha)));
+      Vec2(b = secondHalf && t1.add(t21.mul(beta)) || t0.add(t10.mul(beta)));
+      _results.push((function() {
+        var _j, _ref1, _ref2, _results1;
+        _results1 = [];
+        for (x = _j = _ref1 = a.x.ceil(), _ref2 = b.x.ceil(); _ref1 <= _ref2 ? _j <= _ref2 : _j >= _ref2; x = _ref1 <= _ref2 ? ++_j : --_j) {
+          _results1.push(canvas.putPixel(x, t0.y + i, color));
+        }
+        return _results1;
+      })());
+    }
+    return _results;
+  };
+
   canvas = null;
 
   model = null;
@@ -438,22 +479,27 @@
     canvas = new Canvas('canvas');
     canvas.setSize(width, height);
     return fileinput.on('load', function(data) {
-      var face, hHalf, i, v0, v1, wHalf, x0, x1, y0, y1, _i, _j, _len, _ref;
+      var c, face, hHalf, i, light, n, sc, v, wHalf, wc, _i, _j, _len, _ref;
       canvas.clear();
       model = new Model(data);
       wHalf = width / 2;
       hHalf = height / 2;
+      light = new Vec3(0, 0, -1);
       _ref = model.faces;
       for (_i = 0, _len = _ref.length; _i < _len; _i++) {
         face = _ref[_i];
+        wc = [];
+        sc = [];
         for (i = _j = 0; _j <= 2; i = ++_j) {
-          v0 = model.verts[face[i]];
-          v1 = model.verts[face[(i + 1) % 3]];
-          x0 = ((v0.x.add(1)).mul(wHalf)).ceil();
-          y0 = ((v0.y.add(1)).mul(hHalf)).ceil();
-          x1 = ((v1.x.add(1)).mul(wHalf)).ceil();
-          y1 = ((v1.y.add(1)).mul(hHalf)).ceil();
-          line(x0, y0, x1, y1, 0xFFFFFF, canvas);
+          v = model.verts[face[i]];
+          wc[i] = v;
+          sc[i] = new Vec2(((v.x.add(1)).mul(wHalf)).ceil(), ((v.y.add(1)).mul(hHalf)).ceil());
+        }
+        n = wc[2].sub(wc[0]).prod(wc[1].sub(wc[0])).normalize();
+        i = n.mul(light).mul(255).ceil();
+        if (i > 0) {
+          c = (i & 0xFF) | ((i << 8) & 0xFF00) | ((i << 16) & 0xFF0000);
+          triangle.apply(this, sc.concat([c, canvas]));
         }
       }
       return canvas.draw();

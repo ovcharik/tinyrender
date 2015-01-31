@@ -57,6 +57,7 @@ Number::sqr = -> Math.pow(@, 2)
 Number::sqrt = -> Math.sqrt(@)
 Number::ceil = -> Math.ceil(@)
 Number::round = -> Math.round(@)
+Number::abs = -> Math.abs(@)
 
 class @Canvas extends Module
   @include EventMixin
@@ -91,6 +92,7 @@ class @Canvas extends Module
     ((@height - y) * @width + x) * 4
 
   _numberToRGBA: (c = 0, alpha = false) ->
+    return c if typeof c == 'object'
     {
       r: (c >> 16) & 0xFF
       g: (c >>  8) & 0xFF
@@ -154,9 +156,13 @@ class @Vec2 extends Module
 
   constructor: (@x = 0, @y = 0) ->
 
-  add: (v) -> new Vec2 @x.add v.x, @y.add v.y
-  sub: (v) -> new Vec2 @x.sub v.x, @y.sub v.y
-  mul: (f) -> new Vec2 @x.mul f  , @y.mul f
+  add: (v) -> new Vec2 @x.add(v.x), @y.add(v.y)
+  sub: (v) -> new Vec2 @x.sub(v.x), @y.sub(v.y)
+  mul: (v) ->
+    if v instanceof Vec2
+      @x.mul(v.x).add(@y.mul(v.y))
+    else
+      new Vec2 @x.mul(v), @y.mul(v)
 
   print: -> console.log "(#{@x}, #{@y})"
 
@@ -164,9 +170,9 @@ class @Vec3 extends Module
 
   constructor: (@x = 0, @y = 0, @z = 0) ->
 
-  prod: (v) -> new Vec3 @y.mul(v.z).sub @z.mul(v.y), @z.mul(v.x).sub @x.mul(v.z), @x.mul(v.y).sub @y.mul(v.x)
-  add: (v) -> new Vec3 @x.add v.x, @y.add v.y, @z.add v.z
-  sub: (v) -> new Vec3 @x.sub v.x, @y.sub v.y, @z.sub v.z
+  prod: (v) -> new Vec3 @y.mul(v.z).sub(@z.mul(v.y)), @z.mul(v.x).sub(@x.mul(v.z)), @x.mul(v.y).sub(@y.mul(v.x))
+  add: (v) -> new Vec3 @x.add(v.x), @y.add(v.y), @z.add(v.z)
+  sub: (v) -> new Vec3 @x.sub(v.x), @y.sub(v.y), @z.sub(v.z)
   mul: (v) ->
     if v instanceof Vec3
       @x.mul(v.x).add(@y.mul(v.y)).add(@z.mul(v.z))
@@ -228,6 +234,30 @@ class @Model extends Module
         f = f.slice(1).map Number
         @faces.push [f[0], f[3], f[6]]
 
+@triangle = (t0, t1, t2, color, canvas) ->
+  [t0, t1, t2] = [t0, t1, t2].sort (a, b) -> a.y - b.y
+
+  t10 = t1.sub(t0)
+  t20 = t2.sub(t0)
+  t21 = t2.sub(t1)
+
+  totalHight = t2.y - t0.y
+
+  for i in [0..totalHight]
+    secondHalf = i > t1.y - t0.y || t1.y == t0.y
+    segHeight = secondHalf && t2.y - t1.y || t1.y - t0.y
+
+    y = t0.y + i
+
+    alpha = i / totalHight
+    beta  = (i - (secondHalf && t1.y - t0.y || 0)) / segHeight
+
+    Vec2 a = t0.add t20.mul(alpha)
+    Vec2 b = secondHalf && t1.add(t21.mul(beta)) || t0.add(t10.mul(beta))
+
+    for x in [a.x.ceil()..b.x.ceil()]
+      canvas.putPixel x, t0.y + i, color
+
 canvas = null
 model = null
 
@@ -247,16 +277,20 @@ window.onload = ->
     wHalf = width / 2
     hHalf = height / 2
 
+    light = new Vec3(0, 0, -1)
+
     for face in model.faces
+      wc = []
+      sc = []
       for i in [0..2]
-        v0 = model.verts[face[i]]
-        v1 = model.verts[face[(i + 1) % 3]]
+        v = model.verts[face[i]]
+        wc[i] = v
+        sc[i] = new Vec2 ((v.x.add(1)).mul(wHalf)).ceil(), ((v.y.add(1)).mul(hHalf)).ceil()
 
-        x0 = ((v0.x.add(1)).mul(wHalf)).ceil()
-        y0 = ((v0.y.add(1)).mul(hHalf)).ceil()
-        x1 = ((v1.x.add(1)).mul(wHalf)).ceil()
-        y1 = ((v1.y.add(1)).mul(hHalf)).ceil()
+      n = wc[2].sub(wc[0]).prod(wc[1].sub(wc[0])).normalize()
+      i = n.mul(light).mul(255).ceil()
 
-        line(x0, y0, x1, y1, 0xFFFFFF, canvas)
-
+      if i > 0
+        c = (i & 0xFF) | ((i << 8) & 0xFF00) | ((i << 16) & 0xFF0000)
+        triangle.apply @, sc.concat( [c, canvas] )
     canvas.draw()
