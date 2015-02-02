@@ -13,7 +13,7 @@
 
   this.EventMixin = {
     _eventHandlers: function() {
-      return this._eventHandlers || (this._eventHandlers = {});
+      return this.__eventHandlers || (this.__eventHandlers = {});
     },
     _getHandlers: function(name) {
       var _base;
@@ -276,6 +276,13 @@
       this.reader.onload = this.onLoad.bind(this);
     }
 
+    FileInput.prototype.setType = function(type) {
+      if (type == null) {
+        type = 'text';
+      }
+      return this.type = type;
+    };
+
     FileInput.prototype.onChange = function(event) {
       this.file = event.target.files[0];
       return this.reader[this.types[this.type]](this.file);
@@ -283,6 +290,9 @@
 
     FileInput.prototype.onLoad = function(event) {
       this.data = event.target.result;
+      if (this.type === 'bytes') {
+        this.data = new Int8Array(this.data);
+      }
       return this.trigger('load', this.data);
     };
 
@@ -410,13 +420,17 @@
     __extends(Model, _super);
 
     Model.prototype.regexs = {
-      v: /^v +([-+\.\de]+) +([-+\.\de]+) +([-+\.\de]+)$/,
-      f: /^f +(\d+)\/(\d+)\/(\d+) +(\d+)\/(\d+)\/(\d+) +(\d+)\/(\d+)\/(\d+)$/
+      v: /^v\s+([-+\.\de]+)\s+([-+\.\de]+)\s+([-+\.\de]+)$/,
+      vt: /^vt\s+([-+\.\de]+)\s+([-+\.\de]+)\s+([-+\.\de]+)$/,
+      vn: /^vn\s+([-+\.\de]+)\s+([-+\.\de]+)\s+([-+\.\de]+)$/,
+      f: /^f\s+(\d+)\/(\d+)\/(\d+)\s+(\d+)\/(\d+)\/(\d+)\s+(\d+)\/(\d+)\/(\d+)$/
     };
 
     function Model(data) {
-      var f, line, v, _i, _len, _ref;
+      var f, line, v, vn, vt, _i, _len, _ref;
       this.verts = [null];
+      this.texts = [null];
+      this.norms = [null];
       this.faces = [];
       _ref = data.split('\n');
       for (_i = 0, _len = _ref.length; _i < _len; _i++) {
@@ -424,19 +438,268 @@
         if (v = line.match(this.regexs.v)) {
           v = v.slice(1).map(Number);
           this.verts.push(new Vec3(v[0], v[1], v[2]));
+        } else if (vt = line.match(this.regexs.vt)) {
+          vt = vt.slice(1).map(Number);
+          this.texts.push(new Vec3(vt[0], vt[1], vt[2]));
+        } else if (vn = line.match(this.regexs.vn)) {
+          vn = vn.slice(1).map(Number);
+          this.norms.push(new Vec3(vn[0], vn[1], vn[2]));
         } else if (f = line.match(this.regexs.f)) {
           f = f.slice(1).map(Number);
-          this.faces.push([f[0], f[3], f[6]]);
+          this.faces.push([f.splice(0, 3), f.splice(0, 3), f]);
         }
       }
     }
+
+    Model.prototype.face = function(i) {
+      var f;
+      f = this.faces[i];
+      return {
+        verts: [this.verts[f[0][0]], this.verts[f[1][0]], this.verts[f[2][0]]],
+        texts: [this.texts[f[0][1]], this.texts[f[1][1]], this.texts[f[2][1]]],
+        norms: [this.norms[f[0][2]], this.norms[f[1][2]], this.norms[f[2][2]]]
+      };
+    };
+
+    Model.prototype.forEachFaces = function(cb) {
+      var i, _i, _ref, _results;
+      if (!cb) {
+        return;
+      }
+      _results = [];
+      for (i = _i = 0, _ref = this.faces.length - 1; 0 <= _ref ? _i <= _ref : _i >= _ref; i = 0 <= _ref ? ++_i : --_i) {
+        if (cb.apply(this, [this.face(i)]) === false) {
+          break;
+        } else {
+          _results.push(void 0);
+        }
+      }
+      return _results;
+    };
 
     return Model;
 
   })(Module);
 
-  this.triangle = function(t0, t1, t2, color, canvas) {
-    var a, alpha, b, beta, i, secondHalf, segHeight, t10, t20, t21, totalHight, x, y, _i, _ref, _results;
+  this.TGAImage = (function(_super) {
+    __extends(TGAImage, _super);
+
+    TGAImage.include(EventMixin);
+
+    TGAImage.prototype.colortypes = {
+      grayscale: 1,
+      rgb: 3,
+      rgba: 4
+    };
+
+    TGAImage.prototype.formats = {
+      palette: 1,
+      truecolor: 2,
+      monochrome: 3,
+      rle: 8
+    };
+
+    function TGAImage(fileInput) {
+      this.fileInput = fileInput;
+      this.fileInput.setType('bytes');
+      this.fileInput.on('load', this._onFileLoad.bind(this));
+    }
+
+    TGAImage.prototype._onFileLoad = function(data) {
+      return this.readFileBuffer(data);
+    };
+
+    TGAImage.prototype._reset = function() {
+      this._nextBytesOffset = 0;
+      delete this._header;
+      delete this._bytespp;
+      delete this.width;
+      return delete this.height;
+    };
+
+    TGAImage.prototype._readBytesAsNumber = function(count, offset, data) {
+      var i, r, _i, _ref;
+      r = 0;
+      for (i = _i = _ref = count - 1; _ref <= 0 ? _i <= 0 : _i >= 0; i = _ref <= 0 ? ++_i : --_i) {
+        r |= (data[offset + i] & 0xFF) << (i * 8);
+      }
+      return r;
+    };
+
+    TGAImage.prototype._readNextBytesAsNumber = function(count, data) {
+      var offset;
+      offset = this._nextBytesOffset || (this._nextBytesOffset = 0);
+      this._nextBytesOffset += count;
+      return this._readBytesAsNumber(count, offset, data);
+    };
+
+    TGAImage.prototype._readHeader = function(data) {
+      return {
+        idlength: this._readNextBytesAsNumber(1, data),
+        colormaptype: this._readNextBytesAsNumber(1, data),
+        datatypecode: this._readNextBytesAsNumber(1, data),
+        colormaporigin: this._readNextBytesAsNumber(2, data),
+        colormaplength: this._readNextBytesAsNumber(2, data),
+        colormapdepth: this._readNextBytesAsNumber(1, data),
+        xOrigin: this._readNextBytesAsNumber(2, data),
+        yOrigin: this._readNextBytesAsNumber(2, data),
+        width: this._readNextBytesAsNumber(2, data),
+        height: this._readNextBytesAsNumber(2, data),
+        bitsperpixel: this._readNextBytesAsNumber(1, data),
+        imagedescriptor: this._readNextBytesAsNumber(1, data)
+      };
+    };
+
+    TGAImage.prototype._readPixel = function(bpp, data) {
+      var color;
+      color = this._readNextBytesAsNumber(bpp, data);
+      if (bpp === this.colortypes.grayscale) {
+        color = (0xFF << 24) | (color << 16) | (color << 8) | color;
+      } else if (bpp === this.colortypes.rgb) {
+        color = (0xFF << 24) | color;
+      } else if (bpp !== this.colortypes.rgba) {
+        throw new Error('Unknow color type');
+      }
+      return color;
+    };
+
+    TGAImage.prototype._readPixels = function(data) {
+      if (!(this._header.datatypecode | this.formats.rle)) {
+        return this._readSimplePixels(data);
+      } else {
+        return this._readRLEPixels(data);
+      }
+    };
+
+    TGAImage.prototype._readSimplePixels = function(data) {
+      var i, npixels, pixels, _i, _ref;
+      npixels = this.width * this.height;
+      pixels = [];
+      for (i = _i = 0, _ref = npixels - 1; 0 <= _ref ? _i <= _ref : _i >= _ref; i = 0 <= _ref ? ++_i : --_i) {
+        pixels.push(this._readPixel(this._bytespp, data));
+      }
+      return pixels;
+    };
+
+    TGAImage.prototype._readRLEPixels = function(data) {
+      var chunk, cpixel, i, npixels, pixel, pixels, _i, _j, _ref;
+      npixels = this.width * this.height;
+      cpixel = 0;
+      pixels = [];
+      while (npixels > cpixel) {
+        chunk = this._readNextBytesAsNumber(1, data);
+        if (chunk < 128) {
+          for (i = _i = 0; 0 <= chunk ? _i <= chunk : _i >= chunk; i = 0 <= chunk ? ++_i : --_i) {
+            pixels.push(this._readPixel(this._bytespp, data));
+            cpixel++;
+          }
+        } else {
+          chunk -= 127;
+          pixel = this._readPixel(this._bytespp, data);
+          for (i = _j = 0, _ref = chunk - 1; 0 <= _ref ? _j <= _ref : _j >= _ref; i = 0 <= _ref ? ++_j : --_j) {
+            pixels.push(pixel);
+            cpixel++;
+          }
+        }
+      }
+      return pixels;
+    };
+
+    TGAImage.prototype.readFileBuffer = function(data) {
+      this._reset();
+      this._header = this._readHeader(data);
+      this._bytespp = this._header.bitsperpixel >> 3;
+      this.height = this._header.height;
+      this.width = this._header.width;
+      this._pixels = this._readPixels(data);
+      if (this._header.imagedescriptor & 0x20) {
+        this.flipVertically();
+      }
+      if (this._header.imagedescriptor & 0x10) {
+        this.flipHorizontally();
+      }
+      return this.trigger('load');
+    };
+
+    TGAImage.prototype.flipHorizontally = function() {
+      var half, i, j, p1, p2, _i, _ref, _results;
+      if (!this._pixels) {
+        return;
+      }
+      half = this.width >> 1;
+      _results = [];
+      for (i = _i = 0, _ref = half - 1; 0 <= _ref ? _i <= _ref : _i >= _ref; i = 0 <= _ref ? ++_i : --_i) {
+        _results.push((function() {
+          var _j, _ref1, _ref2, _results1;
+          _results1 = [];
+          for (j = _j = 0, _ref1 = this.height - 1; 0 <= _ref1 ? _j <= _ref1 : _j >= _ref1; j = 0 <= _ref1 ? ++_j : --_j) {
+            p1 = j * this.width + i;
+            p2 = j * this.width + this.width - 1 - i;
+            _results1.push((_ref2 = [this._pixels[p2], this._pixels[p1]], this._pixels[p1] = _ref2[0], this._pixels[p2] = _ref2[1], _ref2));
+          }
+          return _results1;
+        }).call(this));
+      }
+      return _results;
+    };
+
+    TGAImage.prototype.flipVertically = function() {
+      var half, i, j, p1, p2, _i, _ref, _results;
+      if (!this._pixels) {
+        return;
+      }
+      half = this.height >> 1;
+      _results = [];
+      for (i = _i = 0, _ref = half - 1; 0 <= _ref ? _i <= _ref : _i >= _ref; i = 0 <= _ref ? ++_i : --_i) {
+        _results.push((function() {
+          var _j, _ref1, _ref2, _results1;
+          _results1 = [];
+          for (j = _j = 0, _ref1 = this.width - 1; 0 <= _ref1 ? _j <= _ref1 : _j >= _ref1; j = 0 <= _ref1 ? ++_j : --_j) {
+            p1 = i * this.width + j;
+            p2 = (this.height - 1 - i) * this.width + j;
+            _results1.push((_ref2 = [this._pixels[p2], this._pixels[p1]], this._pixels[p1] = _ref2[0], this._pixels[p2] = _ref2[1], _ref2));
+          }
+          return _results1;
+        }).call(this));
+      }
+      return _results;
+    };
+
+    TGAImage.prototype.getPixel = function(x, y) {
+      return this._pixels[y * this.width + x];
+    };
+
+    TGAImage.prototype.setPixel = function(x, y, color) {
+      return this._pixels[y * this.width + x] = color;
+    };
+
+    TGAImage.prototype.draw = function(canvas) {
+      var p, x, y, _i, _len, _ref, _ref1;
+      canvas.setSize(this.width, this.height);
+      canvas.clear();
+      _ref = [0, 0], x = _ref[0], y = _ref[1];
+      _ref1 = this._pixels;
+      for (_i = 0, _len = _ref1.length; _i < _len; _i++) {
+        p = _ref1[_i];
+        canvas.putPixel(x, y, p);
+        x++;
+        if (x >= this.width) {
+          y++;
+          x = 0;
+        }
+      }
+      return canvas.draw();
+    };
+
+    return TGAImage;
+
+  })(Module);
+
+  this.triangle = function(t0, t1, t2, color, canvas, zBuffer) {
+    var a, alpha, b, beta, i, idx, p, phi, secondHalf, segHeight, t10, t20, t21, totalHight, x, y, _i, _ref, _ref1, _results;
+    if (zBuffer == null) {
+      zBuffer = [];
+    }
     _ref = [t0, t1, t2].sort(function(a, b) {
       return a.y - b.y;
     }), t0 = _ref[0], t1 = _ref[1], t2 = _ref[2];
@@ -451,13 +714,24 @@
       y = t0.y + i;
       alpha = i / totalHight;
       beta = (i - (secondHalf && t1.y - t0.y || 0)) / segHeight;
-      Vec2(a = t0.add(t20.mul(alpha)));
-      Vec2(b = secondHalf && t1.add(t21.mul(beta)) || t0.add(t10.mul(beta)));
+      Vec3(a = t0.add(t20.mul(alpha)));
+      Vec3(b = secondHalf && t1.add(t21.mul(beta)) || t0.add(t10.mul(beta)));
+      if (a.x > b.x) {
+        _ref1 = [b, a], a = _ref1[0], b = _ref1[1];
+      }
       _results.push((function() {
-        var _j, _ref1, _ref2, _results1;
+        var _j, _ref2, _ref3, _results1;
         _results1 = [];
-        for (x = _j = _ref1 = a.x.ceil(), _ref2 = b.x.ceil(); _ref1 <= _ref2 ? _j <= _ref2 : _j >= _ref2; x = _ref1 <= _ref2 ? ++_j : --_j) {
-          _results1.push(canvas.putPixel(x, t0.y + i, color));
+        for (x = _j = _ref2 = a.x.ceil(), _ref3 = b.x.ceil(); _ref2 <= _ref3 ? _j <= _ref3 : _j >= _ref3; x = _ref2 <= _ref3 ? ++_j : --_j) {
+          phi = a.x === b.x && 1 || (x - a.x) / (b.x - a.x);
+          p = b.sub(a).mul(phi).add(a);
+          idx = p.y.mul(canvas.width).add(p.x);
+          if (!((zBuffer[idx] != null) && zBuffer[idx] > p.z)) {
+            zBuffer[idx] = p.z;
+            _results1.push(canvas.putPixel(x, t0.y + i, color));
+          } else {
+            _results1.push(void 0);
+          }
         }
         return _results1;
       })());
@@ -474,34 +748,36 @@
   height = 800;
 
   window.onload = function() {
-    var fileinput;
-    fileinput = new FileInput('file');
+    var diffuseFile, modelFile, tga;
+    modelFile = new FileInput('model');
+    diffuseFile = new FileInput('diffuse', 'bytes');
+    tga = new TGAImage(diffuseFile);
     canvas = new Canvas('canvas');
-    canvas.setSize(width, height);
-    return fileinput.on('load', function(data) {
-      var c, face, hHalf, i, light, n, sc, v, wHalf, wc, _i, _j, _len, _ref;
+    tga.on('load', function() {
+      return tga.draw(canvas);
+    });
+    return modelFile.on('load', function(data) {
+      var hHalf, light, wHalf, zBuffer;
+      canvas.setSize(width, height);
       canvas.clear();
       model = new Model(data);
       wHalf = width / 2;
       hHalf = height / 2;
+      zBuffer = [];
       light = new Vec3(0, 0, -1);
-      _ref = model.faces;
-      for (_i = 0, _len = _ref.length; _i < _len; _i++) {
-        face = _ref[_i];
-        wc = [];
-        sc = [];
-        for (i = _j = 0; _j <= 2; i = ++_j) {
-          v = model.verts[face[i]];
-          wc[i] = v;
-          sc[i] = new Vec2(((v.x.add(1)).mul(wHalf)).ceil(), ((v.y.add(1)).mul(hHalf)).ceil());
-        }
+      model.forEachFaces(function(face) {
+        var c, i, n, sc, wc;
+        wc = face.verts;
+        sc = wc.map(function(v) {
+          return new Vec3(((v.x.add(1)).mul(wHalf)).ceil(), ((v.y.add(1)).mul(hHalf)).ceil(), v.z);
+        });
         n = wc[2].sub(wc[0]).prod(wc[1].sub(wc[0])).normalize();
         i = n.mul(light).mul(255).ceil();
         if (i > 0) {
           c = (i & 0xFF) | ((i << 8) & 0xFF00) | ((i << 16) & 0xFF0000);
-          triangle.apply(this, sc.concat([c, canvas]));
+          return triangle.apply(this, sc.concat([c, canvas, zBuffer]));
         }
-      }
+      });
       return canvas.draw();
     });
   };

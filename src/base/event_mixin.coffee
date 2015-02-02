@@ -1,6 +1,6 @@
 @EventMixin =
   _eventHandlers: ->
-    @_eventHandlers ||= {}
+    @__eventHandlers ||= {}
 
   _getHandlers: (name) ->
     @_eventHandlers()[name] ||= []
