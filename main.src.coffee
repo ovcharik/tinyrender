@@ -59,6 +59,146 @@ Number::ceil = -> Math.ceil(@)
 Number::round = -> Math.round(@)
 Number::abs = -> Math.abs(@)
 
+class @BMPImage extends Module
+  @include EventMixin
+
+  colortypes:
+    grayscale : 1
+    rgb       : 3
+    rgba      : 4
+
+  formats:
+    palette    : 1
+    truecolor  : 2
+    monochrome : 3
+    rle        : 8
+
+  constructor: (@fileInput) ->
+    @fileInput.setType('bytes')
+    @fileInput.on 'load', @_onFileLoad.bind(@)
+
+  _onFileLoad: (data) ->
+    @readFileBuffer data
+
+  _reset: ->
+    @_nextBytesOffset = 0
+    delete @_header
+    delete @_bytespp
+    delete @width
+    delete @height
+
+  _readBytesAsNumber: (count, offset, data) ->
+    r = 0
+    for i in [count - 1..0]
+      r |= ((data[offset + i] & 0xFF) << (i * 8))
+    r
+
+  _readNextBytesAsNumber: (count, data) ->
+    offset = @_nextBytesOffset ||= 0
+    @_nextBytesOffset += count
+    @_readBytesAsNumber(count, offset, data)
+
+  _readHeader: (data) ->
+    idlength:        @_readNextBytesAsNumber(1, data)
+    colormaptype:    @_readNextBytesAsNumber(1, data)
+    datatypecode:    @_readNextBytesAsNumber(1, data)
+    colormaporigin:  @_readNextBytesAsNumber(2, data)
+    colormaplength:  @_readNextBytesAsNumber(2, data)
+    colormapdepth:   @_readNextBytesAsNumber(1, data)
+    xOrigin:         @_readNextBytesAsNumber(2, data)
+    yOrigin:         @_readNextBytesAsNumber(2, data)
+    width:           @_readNextBytesAsNumber(2, data)
+    height:          @_readNextBytesAsNumber(2, data)
+    bitsperpixel:    @_readNextBytesAsNumber(1, data)
+    imagedescriptor: @_readNextBytesAsNumber(1, data)
+
+  _readPixel: (bpp, data) ->
+    color = @_readNextBytesAsNumber(bpp, data)
+    if bpp == @colortypes.grayscale
+      color = (0xFF << 24) | (color << 16) | (color << 8) | color
+    else if bpp == @colortypes.rgb
+      color = (0xFF << 24) | color
+    else unless bpp == @colortypes.rgba
+      throw new Error('Unknow color type')
+    color
+
+  _readPixels: (data) ->
+    unless @_header.datatypecode | @formats.rle
+      @_readSimplePixels(data)
+    else
+      @_readRLEPixels(data)
+
+  _readSimplePixels: (data) ->
+    npixels = @width * @height
+    pixels = []
+    for i in [0..npixels - 1]
+      pixels.push @_readPixel @_bytespp, data
+    pixels
+
+  _readRLEPixels: (data) ->
+    npixels = @width * @height
+    cpixel = 0
+    pixels = []
+    while npixels > cpixel
+      chunk = @_readNextBytesAsNumber(1, data)
+      if chunk < 128
+        for i in [0..chunk]
+          pixels.push @_readPixel @_bytespp, data
+          cpixel++
+      else
+        chunk -= 127
+        pixel = @_readPixel @_bytespp, data
+        for i in [0..chunk - 1]
+          pixels.push pixel
+          cpixel++
+    pixels
+
+  readFileBuffer: (data) ->
+    @_reset()
+    @_header = @_readHeader(data)
+    @_bytespp = @_header.bitsperpixel >> 3
+    @height = @_header.height
+    @width = @_header.width
+    @_pixels = @_readPixels(data)
+    if @_header.imagedescriptor & 0x20
+      @flipVertically()
+    if @_header.imagedescriptor & 0x10
+      @flipHorizontally()
+    @trigger 'load'
+
+  flipHorizontally: ->
+    return unless @_pixels
+    half = @width >> 1
+    for i in [0..half - 1]
+      for j in [0..@height - 1]
+        p1 = j * @width + i
+        p2 = j * @width + @width - 1 - i
+        [@_pixels[p1], @_pixels[p2]] = [@_pixels[p2], @_pixels[p1]]
+
+  flipVertically: ->
+    return unless @_pixels
+    half = @height >> 1
+    for i in [0..half - 1]
+      for j in [0..@width - 1]
+        p1 = i * @width + j
+        p2 = (@height - 1 - i) * @width + j
+        [@_pixels[p1], @_pixels[p2]] = [@_pixels[p2], @_pixels[p1]]
+
+  getPixel: (x, y) -> @_pixels[y * @width + x]
+  setPixel: (x, y, color) -> @_pixels[y * @width + x] = color
+
+  draw: (canvas) ->
+    canvas.setSize(@width, @height)
+    canvas.clear()
+    [x, y] = [0, 0]
+    for p in @_pixels
+      canvas.putPixel x, y, p
+      x++
+      if x >= @width
+        y++
+        x = 0
+    canvas.draw()
+
 class @Canvas extends Module
   @include EventMixin
 
@@ -262,6 +402,9 @@ class @Model extends Module
     for i in [0..@faces.length - 1]
       break if cb.apply(@, [@face(i)]) == false
 
+  setDiffuse: (tga) -> @_diffuseTexture = tga
+  diffuse: (x, y) -> @_diffuseTexture.getPixel x, y
+
 class @TGAImage extends Module
   @include EventMixin
 
@@ -402,13 +545,19 @@ class @TGAImage extends Module
         x = 0
     canvas.draw()
 
-
-@triangle = (t0, t1, t2, color, canvas, zBuffer = []) ->
-  [t0, t1, t2] = [t0, t1, t2].sort (a, b) -> a.y - b.y
+@triangle = (t0, t1, t2, u0, u1, u2, intensity, canvas, zBuffer = []) ->
+  return if t0.y == t1.y and t0.y == t2.y
+  if t0.y > t1.y then [t0, t1] = [t1, t0]; [u0, u1] = [u1, u0]
+  if t0.y > t2.y then [t0, t2] = [t2, t0]; [u0, u2] = [u2, u0]
+  if t1.y > t2.y then [t1, t2] = [t2, t1]; [u1, u2] = [u2, u1]
 
   t10 = t1.sub(t0)
   t20 = t2.sub(t0)
   t21 = t2.sub(t1)
+
+  u10 = u1.sub(u0)
+  u20 = u2.sub(u0)
+  u21 = u2.sub(u1)
 
   totalHight = t2.y - t0.y
 
@@ -421,17 +570,22 @@ class @TGAImage extends Module
     alpha = i / totalHight
     beta  = (i - (secondHalf && t1.y - t0.y || 0)) / segHeight
 
-    Vec3 a = t0.add t20.mul(alpha)
-    Vec3 b = secondHalf && t1.add(t21.mul(beta)) || t0.add(t10.mul(beta))
+    a = t0.add t20.mul(alpha)
+    b = secondHalf && t1.add(t21.mul(beta)) || t0.add(t10.mul(beta))
+
+    ua = u0.add u20.mul(alpha)
+    ub = secondHalf && u1.add(u21.mul(beta)) || u0.add(u10.mul(beta))
 
     [a, b] = [b, a] if a.x > b.x
 
     for x in [a.x.ceil()..b.x.ceil()]
       phi = a.x == b.x && 1 || (x - a.x) / (b.x - a.x)
       p = b.sub(a).mul(phi).add(a)
+      up = ub.sub(ua).mul(phi).add(ua)
       idx = p.y.mul(canvas.width).add(p.x)
       unless zBuffer[idx]? and zBuffer[idx] > p.z
         zBuffer[idx] = p.z
+        color = model.diffuse(up.x, up.y)
         canvas.putPixel x, t0.y + i, color
 
 canvas = null
@@ -441,34 +595,41 @@ width  = 800
 height = 800
 
 window.onload = ->
-  modelFile = new FileInput 'model'
-  diffuseFile = new FileInput 'diffuse', 'bytes'
-  tga = new TGAImage diffuseFile
+  # modelFile = new FileInput 'model'
+  tgaFile = new FileInput 'tga', 'bytes'
+  tga = new TGAImage tgaFile
+
+  bmpFile = new FileInput 'bmp', 'bytes'
+  bmp = new BMPImage bmpFile
+
   canvas = new Canvas('canvas')
 
   tga.on 'load', ->
     tga.draw(canvas)
 
-  modelFile.on 'load', (data) ->
-    canvas.setSize(width, height)
-    canvas.clear()
+  bmp.on 'load', ->
+    bmp.draw(canvas)
 
-    model = new Model(data)
+  # modelFile.on 'load', (data) ->
+  #   canvas.setSize(width, height)
+  #   canvas.clear()
 
-    wHalf = width / 2
-    hHalf = height / 2
-    zBuffer = []
+  #   model = new Model(data)
 
-    light = new Vec3(0, 0, -1)
+  #   wHalf = width / 2
+  #   hHalf = height / 2
+  #   zBuffer = []
 
-    model.forEachFaces (face) ->
-      wc = face.verts
-      sc = wc.map (v) -> new Vec3 ((v.x.add(1)).mul(wHalf)).ceil(), ((v.y.add(1)).mul(hHalf)).ceil(), v.z
+  #   light = new Vec3(0, 0, -1)
 
-      n = wc[2].sub(wc[0]).prod(wc[1].sub(wc[0])).normalize()
-      i = n.mul(light).mul(255).ceil()
+  #   model.forEachFaces (face) ->
+  #     wc = face.verts
+  #     sc = wc.map (v) -> new Vec3 ((v.x.add(1)).mul(wHalf)).ceil(), ((v.y.add(1)).mul(hHalf)).ceil(), v.z
 
-      if i > 0
-        c = (i & 0xFF) | ((i << 8) & 0xFF00) | ((i << 16) & 0xFF0000)
-        triangle.apply @, sc.concat( [c, canvas, zBuffer] )
-    canvas.draw()
+  #     n = wc[2].sub(wc[0]).prod(wc[1].sub(wc[0])).normalize()
+  #     i = n.mul(light).mul(255).ceil()
+
+  #     if i > 0
+  #       c = (i & 0xFF) | ((i << 8) & 0xFF00) | ((i << 16) & 0xFF0000)
+  #       triangle.apply @, sc.concat( [c, canvas, zBuffer] )
+  #   canvas.draw()

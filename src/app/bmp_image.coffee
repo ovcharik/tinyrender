@@ -1,4 +1,4 @@
-class @TGAImage extends Module
+class @BMPImage extends Module
   @include EventMixin
 
   colortypes:

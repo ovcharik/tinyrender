@@ -38,3 +38,6 @@ class @Model extends Module
     return unless cb
     for i in [0..@faces.length - 1]
       break if cb.apply(@, [@face(i)]) == false
+
+  setDiffuse: (tga) -> @_diffuseTexture = tga
+  diffuse: (x, y) -> @_diffuseTexture.getPixel x, y
